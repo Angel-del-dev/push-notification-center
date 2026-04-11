@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 	"notificationapi.com/internal/domains/notifications/dtos"
 	"notificationapi.com/internal/infrastructure/request"
 	"notificationapi.com/pkg"
@@ -111,57 +112,126 @@ func (s *Service) Subscribe(c fiber.Ctx) error {
 	})
 }
 
-func (s *Service) Send(ctx fiber.Ctx) error {
-	application, found := s.getDataFromRequest(ctx, "application")
+func (s *Service) Send(c fiber.Ctx) error {
+	application, found := s.getDataFromRequest(c, "application")
 	if !found {
-		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid auth token",
 		})
 	}
 
-	key, found := s.getDataFromRequest(ctx, "key")
+	_, found = s.getDataFromRequest(c, "key")
 	if !found {
-		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid auth token",
 		})
 	}
 
-	fmt.Println(application)
-	fmt.Println(key)
-
-	var subscription pkg.StoredSubscription
-
-	req, err := request.ParseBody[dtos.RequestSubscriptionType](ctx)
+	req, err := request.ParseBody[dtos.RequestSendType](c)
 	if err != nil {
-		return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid body",
 		})
 	}
 
-	subscription.Endpoint = req.Endpoint
-	subscription.Auth = req.Keys.Auth
-	subscription.P256dh = req.Keys.P256dh
-	fmt.Println(subscription)
-
-	payload := map[string]string{
-		"title": "Hola 👋",
-		"body":  "Notificación enviada desde Go 🚀",
+	if req.User == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "User must be set",
+		})
 	}
 
-	statuscode, err := pkg.SendNotification(subscription, s.PublicKey, s.PrivateKey, payload)
+	if req.Title == "" || req.Message == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Title and Message parameters must be set",
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second) // Needed for pooling
+	defer cancel()
+
+	_, err = s.Repository.GetUser(ctx, application, req.User)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "User not found",
+		})
+	}
+
+	payload := map[string]string{
+		"title": req.Title,
+		"body":  req.Message,
+		"icon":  req.Icon,
+	}
+
+	var rows pgx.Rows
+
+	if req.Tag == "" {
+		rows, err = s.Repository.GetSubscriptionsByUser(ctx, application, req.User)
+	} else {
+		rows, err = s.Repository.GetSubscriptionsByUserAndTag(ctx, application, req.User, req.Tag)
+	}
 
 	if err != nil {
-		fmt.Println(err)
-		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+		fmt.Println("Error getting subscriptions")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Internal server error",
 		})
 	}
-	fmt.Println("Statuscode: ")
-	fmt.Println(statuscode)
 
-	return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "Notification Sent",
-	})
+	countSubscriptions := 0
+	countRemovedSubscriptions := 0
+
+	for rows.Next() {
+		row, _ := rows.Values()
+		subscription := pkg.StoredSubscription{}
+		subscription.Endpoint = row[1].(string)
+		subscription.P256dh = row[2].(string)
+		subscription.Auth = row[3].(string)
+
+		statuscode, err := pkg.SendNotification(subscription, s.PublicKey, s.PrivateKey, payload)
+
+		if err != nil {
+			fmt.Println("Error sending notification")
+			fmt.Println(err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Internal server error",
+			})
+		}
+
+		if statuscode == 410 { // Serviceworker has ben removed or unregistered and cannot send notification
+			err = s.Repository.DeleteSubscription(ctx, application, subscription.Endpoint)
+			if err != nil {
+				fmt.Println(err)
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"message": "Internal server error",
+				})
+			}
+			countRemovedSubscriptions++
+		}
+
+		countSubscriptions++
+	}
+
+	if countSubscriptions == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Couldn't find any subscriptions",
+		})
+	}
+
+	if countRemovedSubscriptions == countSubscriptions {
+		return c.Status(fiber.StatusGone).JSON(fiber.Map{
+			"message": "No active subscriptions where found. Inactive subscriptions have been removed",
+		})
+	}
+
+	if countRemovedSubscriptions > 0 {
+		return c.Status(fiber.StatusMultiStatus).JSON(fiber.Map{
+			"message": "Couldn't send the notification to some subscriptions. Inactive subscriptions have been removed",
+			"success": countSubscriptions,
+			"failed":  countRemovedSubscriptions,
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{})
 }
 
 func (s *Service) getDataFromRequest(ctx fiber.Ctx, fieldName string) (string, bool) {

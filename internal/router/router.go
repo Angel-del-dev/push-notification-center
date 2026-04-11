@@ -100,13 +100,13 @@ func (r *Router) setWebPushRoutes() {
 	service.PublicKey = r.configuration.Application.VAPIDPubliKey
 	service.Repository = *repository
 
-	webpushGroup := r.app.Group("/notifications")
-
-	webpushGroup.Post("/subscribe",
+	webpushGroup := r.app.Group("/notifications",
 		middlewares.ContentTypeAllowed("application/json"),
 		middlewares.JWTMiddleware([]byte(r.configuration.Application.SecretJWT)),
-		service.Subscribe)
-	//webpushGroup.Post("/send", service.Send)
+	)
+
+	webpushGroup.Post("/subscribe", service.Subscribe)
+	webpushGroup.Post("/send", service.Send)
 }
 
 func (r *Router) setAuthRoutes() {
