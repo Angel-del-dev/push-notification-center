@@ -13,7 +13,7 @@ func JWTMiddleware(secret []byte) fiber.Handler {
 				"error": "Valid bearer token must be specified",
 			})
 		}
-		c.Locals("user", claims)
+		c.Locals("application", claims)
 		return c.Next()
 	}
 }

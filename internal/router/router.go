@@ -102,8 +102,11 @@ func (r *Router) setWebPushRoutes() {
 
 	webpushGroup := r.app.Group("/notifications")
 
-	webpushGroup.Post("/subscribe", service.Subscribe)
-	webpushGroup.Post("/send", service.Send)
+	webpushGroup.Post("/subscribe",
+		middlewares.ContentTypeAllowed("application/json"),
+		middlewares.JWTMiddleware([]byte(r.configuration.Application.SecretJWT)),
+		service.Subscribe)
+	//webpushGroup.Post("/send", service.Send)
 }
 
 func (r *Router) setAuthRoutes() {
