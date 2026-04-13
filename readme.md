@@ -59,7 +59,7 @@ Project startup depends on `.env` variables.
 | `VAPIDPRIVATEKEY` | Push notification private key. | `string` | `true` | Notifications |
 | `VAPIDPUBLICKEY` | Push notification private key. | `string` | `true` | Notifications |
 
-***Note:*** `VAPID KEYS` can be generating using `/internal/domains/notifications/service.go:GenerateVAPIDKeys()` 
+***Note:*** `VAPID KEYS` can be generated using `/internal/domains/notifications/service.go:GenerateVAPIDKeys()` 
 
 ## API Endpoints
 
